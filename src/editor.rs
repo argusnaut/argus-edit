@@ -1,50 +1,67 @@
-mod terminal;
 use core::cmp::min;
-use crossterm::event::{
-    Event::{self, Key},
-    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, read,
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, read};
+use std::{
+    env,
+    io::Error,
+    panic::{set_hook, take_hook},
 };
-use std::io::Error;
+mod terminal;
+mod view;
 use terminal::{Position, Size, Terminal};
-
-const NAME: &str = env!("CARGO_PKG_NAME");
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+use view::View;
 
 #[derive(Copy, Clone, Default)]
-pub struct Location {
+struct Location {
     x: usize,
     y: usize,
 }
 
-#[derive(Default)]
 pub struct Editor {
     should_quit: bool,
     location: Location,
+    view: View,
 }
 
 impl Editor {
-    pub fn run(&mut self) {
-        Terminal::initialize().unwrap();
-        let result = self.repl();
-        Terminal::terminate().unwrap();
-        result.unwrap();
+    pub fn new() -> Result<Self, Error> {
+        let current_hook = take_hook();
+        set_hook(Box::new(move |panic_info| {
+            let _ = Terminal::terminate();
+            current_hook(panic_info);
+        }));
+        Terminal::initialize()?;
+        let mut view = View::default();
+        let args: Vec<String> = env::args().collect();
+        if let Some(filename) = args.get(1) {
+            view.load(filename);
+        }
+        Ok(Self {
+            should_quit: false,
+            location: Location::default(),
+            view,
+        })
     }
-
-    fn repl(&mut self) -> Result<(), Error> {
+    pub fn run(&mut self) {
         loop {
-            self.refresh_screen()?;
+            self.refresh_screen();
             if self.should_quit {
                 break;
             }
-            let event = read()?;
-            self.evaluate_event(&event)?;
+            match read() {
+                Ok(event) => self.evaluate_event(event),
+                Err(err) => {
+                    #[cfg(debug_assertions)]
+                    {
+                        panic!("Could not read event: {err:?}");
+                    }
+                }
+            }
         }
-        Ok(())
     }
 
-    fn move_point(&mut self, key_code: KeyCode) -> Result<(), Error> {
+    fn move_point(&mut self, key_code: KeyCode) {
         let Location { mut x, mut y } = self.location;
-        let Size { height, width } = Terminal::size()?;
+        let Size { height, width } = Terminal::size().unwrap_or_default();
         match key_code {
             KeyCode::Up => {
                 y = y.saturating_sub(1);
@@ -73,85 +90,67 @@ impl Editor {
             _ => (),
         }
         self.location = Location { x, y };
-        Ok(())
     }
 
-    fn evaluate_event(&mut self, event: &Event) -> Result<(), Error> {
-        if let Key(KeyEvent {
-            code,
-            modifiers,
-            kind: KeyEventKind::Press,
-            ..
-        }) = event
-        {
-            match code {
-                KeyCode::Char('q') if *modifiers == KeyModifiers::CONTROL => {
+    // needless_pass_by_value: Event is not huge, so there is not a
+    // performance overhead in passing by value, and pattern matching in this
+    // function would be needlessly complicated if we pass by reference here.
+    #[allow(clippy::needless_pass_by_value)]
+    fn evaluate_event(&mut self, event: Event) {
+        match event {
+            Event::Key(KeyEvent {
+                code,
+                kind: KeyEventKind::Press,
+                modifiers,
+                ..
+            }) => match (code, modifiers) {
+                (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
                     self.should_quit = true;
                 }
-                KeyCode::Up
-                | KeyCode::Down
-                | KeyCode::Left
-                | KeyCode::Right
-                | KeyCode::PageDown
-                | KeyCode::PageUp
-                | KeyCode::End
-                | KeyCode::Home => {
-                    self.move_point(*code)?;
+                (
+                    KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::PageDown
+                    | KeyCode::PageUp
+                    | KeyCode::End
+                    | KeyCode::Home,
+                    _,
+                ) => {
+                    self.move_point(code);
                 }
-                _ => (),
+                _ => {}
+            },
+            Event::Resize(width_u16, height_u16) => {
+                // clippy::as_conversions: Will run into problems for rare edge case systems where usize < u16
+                #[allow(clippy::as_conversions)]
+                let height = height_u16 as usize;
+                // clippy::as_conversions: Will run into problems for rare edge case systems where usize < u16
+                #[allow(clippy::as_conversions)]
+                let width = width_u16 as usize;
+                self.view.resize(Size { height, width });
             }
+            _ => {}
         }
-        Ok(())
     }
+    fn refresh_screen(&mut self) {
+        let _ = Terminal::hide_caret();
+        self.view.render();
+        let _ = Terminal::move_caret_to(Position {
+            col: self.location.x,
+            row: self.location.y,
+        });
+        let _ = Terminal::show_caret();
+        let _ = Terminal::execute();
+    }
+}
 
-    fn refresh_screen(&self) -> Result<(), Error> {
-        Terminal::hide_caret()?;
-        Terminal::move_caret_to(Position::default())?;
+impl Drop for Editor {
+    fn drop(&mut self) {
+        let _ = Terminal::terminate();
         if self.should_quit {
-            Terminal::clear_screen()?;
-            Terminal::print("Goodbye.\r\n")?;
-        } else {
-            Self::draw_rows()?;
-            Terminal::move_caret_to(Position { 
-                col: self.location.x,
-                row: self.location.y,
-            })?;
+            let _ = Terminal::print("Goodbye.\r\n");
         }
-        Terminal::show_caret()?;
-        Terminal::execute()?;
-        Ok(())
-    }
-
-    fn draw_welcome_message() -> Result<(), Error> {
-        let mut welcome_message = format!("{NAME} editor -- version {VERSION}");
-        let width = Terminal::size()?.width;
-        let len = welcome_message.len();
-        let padding = (width - len) / 2;
-        let spaces = " ".repeat(padding - 1);
-        welcome_message = format!("~{spaces}{welcome_message}");
-        welcome_message.truncate(width);
-        Terminal::print(welcome_message)?;
-        Ok(())
-    }
-
-    fn draw_empty_row() -> Result<(), Error> {
-        Terminal::print("~")?;
-        Ok(())
-    }
-
-    fn draw_rows() -> Result<(), Error> {
-        let Size { height, .. } = Terminal::size()?;
-        for current_row in 0..height {
-            Terminal::clear_line()?;
-            if current_row == height / 3 {
-                Self::draw_welcome_message()?;
-            } else {
-                Self::draw_empty_row()?;
-            }
-            if current_row + 1 < height {
-                Terminal::print("\r\n")?;
-            }
-        }
-        Ok(())
     }
 }
