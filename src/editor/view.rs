@@ -32,13 +32,11 @@ impl View {
             EditorCommand::Resize(size) => self.resize(size),
             EditorCommand::Move(direction) => self.move_text_location(&direction),
             EditorCommand::Quit => {}
-        }
-    }
-
-    pub fn load(&mut self, file_name: &str) {
-        if let Ok(buffer) = Buffer::load(file_name) {
-            self.buffer = buffer;
-            self.needs_redraw = true;
+            EditorCommand::Insert(character) => self.insert_char(character),
+            EditorCommand::Delete => self.delete(),
+            EditorCommand::Backspace => self.delete_backward(),
+            EditorCommand::Enter => self.insert_newline(),
+            EditorCommand::Save => self.save(),
         }
     }
 
@@ -48,8 +46,66 @@ impl View {
         self.needs_redraw = true;
     }
 
-    // region: Rendering
+    // region: File I/O
 
+    pub fn load(&mut self, file_name: &str) {
+        if let Ok(buffer) = Buffer::load(file_name) {
+            self.buffer = buffer;
+            self.needs_redraw = true;
+        }
+    }
+
+    fn save(&self) {
+        let _ = self.buffer.save();
+    }
+
+    // endregion
+
+    // region: Text editing
+    fn insert_newline(&mut self) {
+        self.buffer.insert_newline(self.text_location);
+        self.move_text_location(&Direction::Right);
+        self.needs_redraw = true;
+    }
+
+    fn delete_backward(&mut self) {
+        if self.text_location.line_index != 0 || self.text_location.grapheme_index != 0 {
+            self.move_text_location(&Direction::Left);
+            self.delete();
+        }
+    }
+
+    fn delete(&mut self) {
+        self.buffer.delete(self.text_location);
+        self.needs_redraw = true;
+    }
+
+    fn insert_char(&mut self, character: char) {
+        let old_len = self
+            .buffer
+            .lines
+            .get(self.text_location.line_index)
+            .map_or(0, Line::grapheme_count);
+
+        self.buffer.insert_char(character, self.text_location);
+        let new_len = self
+            .buffer
+            .lines
+            .get(self.text_location.line_index)
+            .map_or(0, Line::grapheme_count);
+
+        let grapheme_delta = new_len.saturating_sub(old_len);
+
+        if grapheme_delta > 0 {
+            self.move_text_location(&Direction::Right);
+        }
+
+        self.needs_redraw = true;
+    }
+
+    // endregion
+
+    // region: Rendering
     pub fn render(&mut self) {
         if !self.needs_redraw {
             return;
@@ -76,11 +132,10 @@ impl View {
         }
         self.needs_redraw = false;
     }
-    
+
     // endregion
 
     // region: Scrolling
-    
     fn scroll_vertically(&mut self, to: usize) {
         let Size { height, .. } = self.size;
         let offset_changed = if to < self.scroll_offset.row {
@@ -93,7 +148,9 @@ impl View {
             false
         };
 
-        self.needs_redraw = self.needs_redraw || offset_changed;
+        if offset_changed {
+            self.needs_redraw = true;
+        }
     }
 
     fn scroll_horizontally(&mut self, to: usize) {
@@ -108,9 +165,11 @@ impl View {
             false
         };
 
-        self.needs_redraw = self.needs_redraw || offset_changed;
+        if offset_changed {
+            self.needs_redraw = true;
+        }
     }
-    
+
     fn scroll_text_location_into_view(&mut self) {
         let Position { row, col } = self.text_location_to_position();
         self.scroll_vertically(row);
@@ -125,7 +184,6 @@ impl View {
     // endregion
 
     // region: Location and Position Handling
-
     pub fn caret_position(&self) -> Position {
         self.text_location_to_position()
             .saturating_sub(self.scroll_offset)
@@ -143,7 +201,6 @@ impl View {
     // endregion
 
     // region: text location movement
-
     fn move_text_location(&mut self, direction: &Direction) {
         let Size { height, .. } = self.size;
 
@@ -171,7 +228,7 @@ impl View {
         self.snap_to_valid_grapheme();
         self.snap_to_valid_line();
     }
-    
+
     #[allow(clippy::arithmetic_side_effects)]
     fn move_right(&mut self) {
         let line_width = self
@@ -187,12 +244,12 @@ impl View {
             self.move_down(1);
         }
     }
-    
+
     #[allow(clippy::arithmetic_side_effects)]
     fn move_left(&mut self) {
         if self.text_location.grapheme_index > 0 {
             self.text_location.grapheme_index -= 1;
-        } else {
+        } else if self.text_location.line_index > 0 {
             self.move_up(1);
             self.move_to_end_of_line();
         }
@@ -225,7 +282,7 @@ impl View {
     }
 
     // endregion
-    
+
     fn build_welcome_message(width: usize) -> String {
         if width == 0 {
             return " ".to_string();
@@ -235,8 +292,7 @@ impl View {
         if width <= len {
             return "~".to_string();
         }
-        // we allow this since we don't care if our welcome message is put _exactly_ in the middle.
-        // it's allowed to be a bit to the left or right.
+
         #[allow(clippy::integer_division)]
         let padding = (width.saturating_sub(len).saturating_sub(1)) / 2;
 
