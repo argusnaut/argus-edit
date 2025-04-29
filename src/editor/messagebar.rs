@@ -1,37 +1,72 @@
-use std::io::Error;
-
-use super::{
-    terminal::{Size, Terminal},
-    uicomponent::UIComponent,
+use std::{
+    io::Error,
+    time::{Duration, Instant},
 };
 
-#[derive(Default)]
-pub struct MessageBar {
-    current_message: String,
-    needs_redraw: bool,
+use super::{Size, Terminal, UIComponent};
+
+const DEFAULT_DURATION: Duration = Duration::new(5, 0);
+
+struct Message {
+    text: String,
+    time: Instant,
 }
 
-impl MessageBar {
-    pub fn update_message(&mut self, message: String) {
-        if message != self.current_message {
-            self.current_message = message;
-            self.mark_redraw(true);
+impl Default for Message {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            time: Instant::now(),
         }
     }
 }
 
+impl Message {
+    fn is_expired(&self) -> bool {
+        Instant::now().duration_since(self.time) > DEFAULT_DURATION
+    }
+}
+
+#[derive(Default)]
+pub struct MessageBar {
+    current_message: Message,
+    needs_redraw: bool,
+    cleared_after_expiry: bool,
+}
+
+impl MessageBar {
+    pub fn update_message(&mut self, message: &str) {
+        self.current_message = Message {
+            text: message.to_string(),
+            time: Instant::now(),
+        };
+        self.cleared_after_expiry = false;
+        self.set_needs_redraw(true);
+    }
+}
+
 impl UIComponent for MessageBar {
-    fn mark_redraw(&mut self, value: bool) {
+    fn set_needs_redraw(&mut self, value: bool) {
         self.needs_redraw = value;
     }
 
     fn needs_redraw(&self) -> bool {
-        self.needs_redraw
+        (!self.cleared_after_expiry && self.current_message.is_expired()) || self.needs_redraw
     }
 
     fn set_size(&mut self, size: Size) {}
 
     fn draw(&mut self, origin: usize) -> Result<(), Error> {
-        Terminal::print_row(origin, &self.current_message)
+        if self.current_message.is_expired() {
+            self.cleared_after_expiry = true;
+        }
+
+        let message = if self.current_message.is_expired() {
+            ""
+        } else {
+            &self.current_message.text
+        };
+
+        Terminal::print_row(origin, message)
     }
 }

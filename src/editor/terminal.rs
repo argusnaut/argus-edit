@@ -5,28 +5,10 @@ use crossterm::terminal::{
     SetTitle, disable_raw_mode, enable_raw_mode, size,
 };
 use crossterm::{Command, queue};
+
 use std::io::{Error, Write, stdout};
 
-#[derive(Copy, Clone, Default, Eq, PartialEq)]
-pub struct Size {
-    pub height: usize,
-    pub width: usize,
-}
-
-#[derive(Copy, Clone, Default)]
-pub struct Position {
-    pub col: usize,
-    pub row: usize,
-}
-
-impl Position {
-    pub const fn saturating_sub(self, other: Self) -> Self {
-        Self {
-            row: self.row.saturating_sub(other.row),
-            col: self.col.saturating_sub(other.col),
-        }
-    }
-}
+use super::{Position, Size};
 
 pub struct Terminal;
 
