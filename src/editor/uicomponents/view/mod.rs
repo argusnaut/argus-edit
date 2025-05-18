@@ -1,21 +1,23 @@
+use crate::editor::RowIndex;
+use crate::prelude::*;
+
 use std::{cmp::min, io::Error};
 
-use super::{
-    DocumentStatus, Line, NAME, Position, Size, Terminal, UIComponent, VERSION,
+use super::super::{
+    DocumentStatus, Line, Terminal,
     command::{Edit, Move},
 };
+use super::UIComponent;
 
 mod buffer;
 mod fileinfo;
+mod searchdirection;
+mod searchinfo;
 
 use buffer::Buffer;
 use fileinfo::FileInfo;
-
-#[derive(Copy, Clone, Default)]
-pub struct Location {
-    pub grapheme_index: usize,
-    pub line_index: usize,
-}
+use searchdirection::SearchDirection;
+use searchinfo::SearchInfo;
 
 #[derive(Default)]
 pub struct View {
@@ -24,6 +26,7 @@ pub struct View {
     size: Size,
     text_location: Location,
     scroll_offset: Position,
+    search_info: Option<SearchInfo>,
 }
 
 impl View {
@@ -40,6 +43,87 @@ impl View {
         self.buffer.is_file_loaded()
     }
 
+    // region: Search
+
+    pub fn enter_search(&mut self) {
+        self.search_info = Some(SearchInfo {
+            prev_location: self.text_location,
+            prev_location_offset: self.scroll_offset,
+            query: None,
+        });
+    }
+
+    pub fn exit_search(&mut self) {
+        self.search_info = None;
+        self.set_needs_redraw(true);
+    }
+
+    pub fn dismiss_search(&mut self) {
+        if let Some(search_info) = &self.search_info {
+            self.text_location = search_info.prev_location;
+            self.scroll_offset = search_info.prev_location_offset;
+            self.scroll_text_location_into_view();
+        }
+
+        self.exit_search();
+    }
+
+    pub fn search(&mut self, query: &str) {
+        if let Some(search_info) = &mut self.search_info {
+            search_info.query = Some(Line::from(query));
+        }
+
+        self.search_in_direction(self.text_location, SearchDirection::default());
+    }
+
+    fn get_search_query(&self) -> Option<&Line> {
+        let query = self
+            .search_info
+            .as_ref()
+            .and_then(|search_info| search_info.query.as_ref());
+
+        debug_assert!(
+            query.is_some(),
+            "Attempting to search with malformed searchinfo present"
+        );
+        query
+    }
+
+    fn search_in_direction(&mut self, from: Location, direction: SearchDirection) {
+        if let Some(location) = self.get_search_query().and_then(|query| {
+            if query.is_empty() {
+                None
+            } else if direction == SearchDirection::Forward {
+                self.buffer.search_forward(query, from)
+            } else {
+                self.buffer.search_backward(query, from)
+            }
+        }) {
+            self.text_location = location;
+            self.center_text_location();
+        };
+        self.set_needs_redraw(true);
+    }
+
+    pub fn search_next(&mut self) {
+        let step_right = self
+            .get_search_query()
+            .map_or(1, |query| min(query.grapheme_count(), 1));
+
+        let location = Location {
+            line_index: self.text_location.line_index,
+            grapheme_index: self.text_location.grapheme_index.saturating_add(step_right),
+        };
+
+        self.search_in_direction(location, SearchDirection::Forward);
+    }
+
+    pub fn search_prev(&mut self) {
+        self.search_in_direction(self.text_location, SearchDirection::Backward);
+    }
+
+    // endregion
+
     // region: File I/O
     pub fn load(&mut self, filename: &str) -> Result<(), Error> {
         let buffer = Buffer::load(filename)?;
@@ -51,7 +135,7 @@ impl View {
     pub fn save(&mut self) -> Result<(), Error> {
         self.buffer.save()
     }
-    
+
     pub fn save_as(&mut self, filename: &str) -> Result<(), Error> {
         self.buffer.save_as(filename)
     }
@@ -133,14 +217,14 @@ impl View {
     // endregion
 
     // region: Rendering
-    fn render_line(at: usize, line_text: &str) -> Result<(), Error> {
+    fn render_line(at: RowIndex, line_text: &str) -> Result<(), Error> {
         Terminal::print_row(at, line_text)
     }
 
     // endregion
 
     // region: Scrolling
-    fn scroll_vertically(&mut self, to: usize) {
+    fn scroll_vertically(&mut self, to: RowIndex) {
         let Size { height, .. } = self.size;
         let offset_changed = if to < self.scroll_offset.row {
             self.scroll_offset.row = to;
@@ -157,7 +241,7 @@ impl View {
         }
     }
 
-    fn scroll_horizontally(&mut self, to: usize) {
+    fn scroll_horizontally(&mut self, to: ColIndex) {
         let Size { width, .. } = self.size;
         let offset_changed = if to < self.scroll_offset.col {
             self.scroll_offset.col = to;
@@ -180,6 +264,17 @@ impl View {
         self.scroll_horizontally(col);
     }
 
+    fn center_text_location(&mut self) {
+        let Size { height, width } = self.size;
+        let Position { row, col } = self.text_location_to_position();
+        let vertical_mid = height.div_ceil(2);
+        let horizontal_mid = width.div_ceil(2);
+
+        self.scroll_offset.row = row.saturating_sub(vertical_mid);
+        self.scroll_offset.col = col.saturating_sub(horizontal_mid);
+        self.set_needs_redraw(true);
+    }
+
     // endregion
 
     // region: Location and Position Handling
@@ -190,6 +285,9 @@ impl View {
 
     fn text_location_to_position(&self) -> Position {
         let row = self.text_location.line_index;
+
+        debug_assert!(row.saturating_sub(1) <= self.buffer.lines.len());
+
         let col = self.buffer.lines.get(row).map_or(0, |line| {
             line.width_until(self.text_location.grapheme_index)
         });
@@ -295,12 +393,12 @@ impl UIComponent for View {
         self.scroll_text_location_into_view();
     }
 
-    fn draw(&mut self, origin_row: usize) -> Result<(), Error> {
+    fn draw(&mut self, origin_row: RowIndex) -> Result<(), Error> {
         let Size { height, width } = self.size;
         let end_y = origin_row.saturating_add(height);
 
         #[allow(clippy::integer_division)]
-        let top_third = height / 3;
+        let top_third = height.div_ceil(3);
         let scroll_top = self.scroll_offset.row;
 
         for current_row in origin_row..end_y {
@@ -311,7 +409,18 @@ impl UIComponent for View {
             if let Some(line) = self.buffer.lines.get(line_index) {
                 let left = self.scroll_offset.col;
                 let right = self.scroll_offset.col.saturating_add(width);
-                Self::render_line(current_row, &line.get_visible_graphemes(left..right))?;
+                let query = self
+                    .search_info
+                    .as_ref()
+                    .and_then(|info| info.query.as_deref());
+                let selected_match = (self.text_location.line_index == line_index
+                    && query.is_some())
+                .then_some(self.text_location.grapheme_index);
+
+                Terminal::print_annotated_row(
+                    current_row,
+                    &line.get_annotated_visible_substr(left..right, query, selected_match),
+                )?;
             } else if current_row == top_third && self.buffer.is_empty() {
                 Self::render_line(current_row, &Self::build_welcome_message(width))?;
             } else {

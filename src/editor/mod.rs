@@ -1,41 +1,30 @@
-use crossterm::event::{Event, KeyEvent, KeyEventKind, read};
+use crate::prelude::*;
+
+use crossterm::event::{read, Event, KeyEvent, KeyEventKind};
 use std::{
-    default, env,
+    env,
     io::Error,
     panic::{set_hook, take_hook},
 };
 
+mod annotatedstring;
 mod command;
-mod commandbar;
 mod documentstatus;
 mod line;
-mod messagebar;
-mod position;
-mod size;
-mod statusbar;
 mod terminal;
-mod uicomponent;
-mod view;
+mod uicomponents;
 
-use commandbar::CommandBar;
 use documentstatus::DocumentStatus;
 use line::Line;
-use messagebar::MessageBar;
-use position::Position;
-use size::Size;
-use statusbar::StatusBar;
 use terminal::Terminal;
-use uicomponent::UIComponent;
-use view::View;
+use uicomponents::{CommandBar, MessageBar, StatusBar, UIComponent, View};
 
 use self::command::{
     Command::{self, Edit, Move, System},
     Edit::InsertNewLine,
+    Move::{Down, Left, Right, Up},
     System::{Dismiss, Quit, Resize, Save, Search},
 };
-
-pub const NAME: &str = env!("CARGO_PKG_NAME");
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const QUIT_TIMES: u8 = 3;
 
@@ -84,6 +73,7 @@ impl Editor {
 
         let args: Vec<String> = env::args().collect();
         if let Some(filename) = args.get(1) {
+            debug_assert!(!filename.is_empty());
             if editor.view.load(filename).is_err() {
                 editor.update_message(&format!("ERR: Could not open file: {filename}"));
             }
@@ -109,6 +99,10 @@ impl Editor {
                     #[cfg(debug_assertions)]
                     {
                         panic!("Could not read event: {err:?}");
+                    }
+                    #[cfg(not(debug_assertions))]
+                    {
+                        let _ = err;
                     }
                 }
             }
@@ -147,6 +141,9 @@ impl Editor {
         } else {
             self.view.caret_position()
         };
+
+        debug_assert!(new_caret_pos.col <= self.terminal_size.width);
+        debug_assert!(new_caret_pos.row <= self.terminal_size.height);
 
         let _ = Terminal::move_caret_to(new_caret_pos);
         let _ = Terminal::show_caret();
@@ -271,17 +268,23 @@ impl Editor {
 
     fn process_command_during_save(&mut self, command: Command) {
         match command {
-            System(Quit | Resize(_) | Search | Save) | Move(_) => {} // Not applicable during save, Resize already handled at this stage
             System(Dismiss) => {
                 self.set_prompt(PromptType::None);
                 self.update_message("Save aborted.");
             }
-            Edit(InsertNewline) => {
+            Edit(InsertNewLine) => {
                 let file_name = self.command_bar.value();
                 self.save(Some(&file_name));
                 self.set_prompt(PromptType::None);
             }
-            Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
+            Edit(edit_command) => {
+                self.command_bar.handle_edit_command(edit_command);
+                let query = self.command_bar.value();
+                self.view.search(&query);
+            }
+            Move(Down | Right) => self.view.search_next(),
+            Move(Left | Up) => self.view.search_prev(),
+            System(Quit | Resize(_) | Search | Save) | Move(_) => {} // Not applicable during save, Resize already handled at this stage
         }
     }
 
@@ -306,8 +309,19 @@ impl Editor {
     fn process_command_during_search(&mut self, command: Command) {
         match command {
             System(Quit | Resize(_) | Search | Save) | Move(_) => {} // Not applicable during save
-            System(Dismiss) | Edit(InsertNewLine) => self.set_prompt(PromptType::None),
-            Edit(edit_command) => self.command_bar.handle_edit_command(edit_command),
+            System(Dismiss) => {
+                self.set_prompt(PromptType::None);
+                self.view.dismiss_search();
+            }
+            Edit(InsertNewLine) => {
+                self.set_prompt(PromptType::None);
+                self.view.exit_search();
+            }
+            Edit(edit_command) => {
+                self.command_bar.handle_edit_command(edit_command);
+                let query = self.command_bar.value();
+                self.view.search(&query);
+            }
         }
     }
 
@@ -331,7 +345,11 @@ impl Editor {
         match prompt_type {
             PromptType::None => self.message_bar.set_needs_redraw(true), //Ensures the message bar is properly painted during the next redraw cycle
             PromptType::Save => self.command_bar.set_prompt("Save as: "),
-            PromptType::Search => self.command_bar.set_prompt("Search: "),
+            PromptType::Search => {
+                self.view.enter_search();
+                self.command_bar
+                    .set_prompt("Search (Esc to cancel, Arrows to navigate): ")
+            }
         }
 
         self.command_bar.clear_value();
