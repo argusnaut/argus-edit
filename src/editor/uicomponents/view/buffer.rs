@@ -1,19 +1,57 @@
+use crate::editor::annotatedstring::AnnotatedString;
 use crate::prelude::*;
 
 use std::fs::{File, read_to_string};
 use std::io::{Error, Write};
+use std::ops::Range;
 
 use super::FileInfo;
 use super::Line;
+use super::highlighter::Highlighter;
 
 #[derive(Default)]
 pub struct Buffer {
-    pub lines: Vec<Line>,
-    pub fileinfo: FileInfo,
-    pub dirty: bool,
+    lines: Vec<Line>,
+    fileinfo: FileInfo,
+    dirty: bool,
 }
 
 impl Buffer {
+    pub const fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub const fn get_file_info(&self) -> &FileInfo {
+        &self.fileinfo
+    }
+
+    pub fn grapheme_count(&self, index: LineIndex) -> GraphemeIndex {
+        self.lines.get(index).map_or(0, Line::grapheme_count)
+    }
+
+    pub fn width_until(&self, index: LineIndex, until: GraphemeIndex) -> GraphemeIndex {
+        self.lines
+            .get(index)
+            .map_or(0, |line| line.width_until(until))
+    }
+
+    pub fn get_highlighted_substring(
+        &self,
+        line_index: LineIndex,
+        range: Range<GraphemeIndex>,
+        highlighter: &Highlighter,
+    ) -> Option<AnnotatedString> {
+        self.lines.get(line_index).map(|line| {
+            line.get_annotated_visible_substr(range, highlighter.get_annotations(line_index))
+        })
+    }
+
+    pub fn highlight(&self, index: LineIndex, highlighter: &mut Highlighter) {
+        if let Some(line) = self.lines.get(index) {
+            highlighter.highlight(index, line);
+        }
+    }
+
     pub fn load(filename: &str) -> Result<Self, Error> {
         let contents = read_to_string(filename)?;
         let mut lines = Vec::new();
@@ -134,7 +172,7 @@ impl Buffer {
         self.fileinfo.has_path()
     }
 
-    pub fn height(&self) -> usize {
+    pub fn height(&self) -> LineIndex {
         self.lines.len()
     }
 

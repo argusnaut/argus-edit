@@ -4,10 +4,7 @@ mod attribute;
 use attribute::Attribute;
 
 use crossterm::cursor::{Hide, MoveTo, Show};
-use crossterm::style::{
-    Attribute::{Reset, Reverse},
-    Print, ResetColor, SetBackgroundColor, SetForegroundColor,
-};
+use crossterm::style::{Print, ResetColor, SetBackgroundColor, SetForegroundColor};
 use crossterm::terminal::{
     Clear, ClearType, DisableLineWrap, EnableLineWrap, EnterAlternateScreen, LeaveAlternateScreen,
     SetTitle, disable_raw_mode, enable_raw_mode, size,
@@ -161,8 +158,10 @@ impl Terminal {
         Ok(())
     }
 
+    /*
     pub fn print_inverted_row(row: RowIndex, line_text: &str) -> Result<(), Error> {
         let width = Self::size()?.width;
         Self::print_row(row, &format!("{Reverse}{line_text:width$.width$}{Reset}"))
     }
+    */
 }

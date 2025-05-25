@@ -11,11 +11,13 @@ use super::UIComponent;
 
 mod buffer;
 mod fileinfo;
+mod highlighter;
 mod searchdirection;
 mod searchinfo;
 
 use buffer::Buffer;
 use fileinfo::FileInfo;
+use highlighter::Highlighter;
 use searchdirection::SearchDirection;
 use searchinfo::SearchInfo;
 
@@ -34,8 +36,8 @@ impl View {
         DocumentStatus {
             total_lines: self.buffer.height(),
             current_line_index: self.text_location.line_index,
-            filename: format!("{}", self.buffer.fileinfo),
-            is_modified: self.buffer.dirty,
+            filename: format!("{}", self.buffer.get_file_info()),
+            is_modified: self.buffer.is_dirty(),
         }
     }
 
@@ -192,18 +194,10 @@ impl View {
     }
 
     fn insert_char(&mut self, character: char) {
-        let old_len = self
-            .buffer
-            .lines
-            .get(self.text_location.line_index)
-            .map_or(0, Line::grapheme_count);
+        let old_len = self.buffer.grapheme_count(self.text_location.line_index);
 
         self.buffer.insert_char(character, self.text_location);
-        let new_len = self
-            .buffer
-            .lines
-            .get(self.text_location.line_index)
-            .map_or(0, Line::grapheme_count);
+        let new_len = self.buffer.grapheme_count(self.text_location.line_index);
 
         let grapheme_delta = new_len.saturating_sub(old_len);
 
@@ -286,12 +280,11 @@ impl View {
     fn text_location_to_position(&self) -> Position {
         let row = self.text_location.line_index;
 
-        debug_assert!(row.saturating_sub(1) <= self.buffer.lines.len());
+        debug_assert!(row.saturating_sub(1) <= self.buffer.height());
 
-        let col = self.buffer.lines.get(row).map_or(0, |line| {
-            line.width_until(self.text_location.grapheme_index)
-        });
-
+        let col = self
+            .buffer
+            .width_until(row, self.text_location.grapheme_index);
         Position { col, row }
     }
 
@@ -311,13 +304,9 @@ impl View {
 
     #[allow(clippy::arithmetic_side_effects)]
     fn move_right(&mut self) {
-        let line_width = self
-            .buffer
-            .lines
-            .get(self.text_location.line_index)
-            .map_or(0, Line::grapheme_count);
+        let grapheme_count = self.buffer.grapheme_count(self.text_location.line_index);
 
-        if self.text_location.grapheme_index < line_width {
+        if self.text_location.grapheme_index < grapheme_count {
             self.text_location.grapheme_index += 1;
         } else {
             self.move_to_start_of_line();
@@ -340,21 +329,15 @@ impl View {
     }
 
     fn move_to_end_of_line(&mut self) {
-        self.text_location.grapheme_index = self
-            .buffer
-            .lines
-            .get(self.text_location.line_index)
-            .map_or(0, Line::grapheme_count);
+        self.text_location.grapheme_index =
+            self.buffer.grapheme_count(self.text_location.line_index);
     }
 
     fn snap_to_valid_grapheme(&mut self) {
-        self.text_location.grapheme_index = self
-            .buffer
-            .lines
-            .get(self.text_location.line_index)
-            .map_or(0, |line| {
-                min(line.grapheme_count(), self.text_location.grapheme_index)
-            });
+        self.text_location.grapheme_index = min(
+            self.text_location.grapheme_index,
+            self.buffer.grapheme_count(self.text_location.line_index),
+        );
     }
 
     fn snap_to_valid_line(&mut self) {
@@ -400,27 +383,30 @@ impl UIComponent for View {
         #[allow(clippy::integer_division)]
         let top_third = height.div_ceil(3);
         let scroll_top = self.scroll_offset.row;
+        let query = self
+            .search_info
+            .as_ref()
+            .and_then(|search_info| search_info.query.as_deref());
+        let selected_match = query.is_some().then_some(self.text_location);
+        let mut highlighter = Highlighter::new(query, selected_match);
+
+        for current_row in 0..end_y {
+            self.buffer.highlight(current_row, &mut highlighter);
+        }
 
         for current_row in origin_row..end_y {
             let line_index = current_row
                 .saturating_sub(origin_row)
                 .saturating_add(scroll_top);
 
-            if let Some(line) = self.buffer.lines.get(line_index) {
-                let left = self.scroll_offset.col;
-                let right = self.scroll_offset.col.saturating_add(width);
-                let query = self
-                    .search_info
-                    .as_ref()
-                    .and_then(|info| info.query.as_deref());
-                let selected_match = (self.text_location.line_index == line_index
-                    && query.is_some())
-                .then_some(self.text_location.grapheme_index);
+            let left = self.scroll_offset.col;
+            let right = self.scroll_offset.col.saturating_add(width);
 
-                Terminal::print_annotated_row(
-                    current_row,
-                    &line.get_annotated_visible_substr(left..right, query, selected_match),
-                )?;
+            if let Some(annotated_string) =
+                self.buffer
+                    .get_highlighted_substring(line_index, left..right, &highlighter)
+            {
+                Terminal::print_annotated_row(current_row, &annotated_string)?;
             } else if current_row == top_third && self.buffer.is_empty() {
                 Self::render_line(current_row, &Self::build_welcome_message(width))?;
             } else {

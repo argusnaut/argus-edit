@@ -15,7 +15,8 @@ use textfragment::TextFragment;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use super::annotatedstring::{AnnotatedString, AnnotationType};
+use super::AnnotatedString;
+use super::Annotation;
 
 #[derive(Default, Clone)]
 pub struct Line {
@@ -85,15 +86,13 @@ impl Line {
     }
 
     pub fn get_visible_graphemes(&self, range: Range<GraphemeIndex>) -> String {
-        self.get_annotated_visible_substr(range, None, None)
-            .to_string()
+        self.get_annotated_visible_substr(range, None).to_string()
     }
 
     pub fn get_annotated_visible_substr(
         &self,
         range: Range<ColIndex>,
-        query: Option<&str>,
-        selected_match: Option<GraphemeIndex>,
+        annotations: Option<&Vec<Annotation>>,
     ) -> AnnotatedString {
         if range.start > range.end {
             return AnnotatedString::default();
@@ -101,27 +100,9 @@ impl Line {
 
         let mut result = AnnotatedString::from(&self.string);
 
-        if let Some(query) = query {
-            if !query.is_empty() {
-                self.find_all(query, 0..self.string.len()).iter().for_each(
-                    |(start, grapheme_index)| {
-                        if let Some(selected_match) = selected_match {
-                            if *grapheme_index == selected_match {
-                                result.add_annotation(
-                                    AnnotationType::SelectedMatch,
-                                    *start,
-                                    start.saturating_add(query.len()),
-                                );
-                                return;
-                            }
-                        }
-                        result.add_annotation(
-                            AnnotationType::Match,
-                            *start,
-                            start.saturating_add(query.len()),
-                        );
-                    },
-                );
+        if let Some(annotations) = annotations {
+            for annotation in annotations {
+                result.add_annotation(annotation.annotation_type, annotation.start, annotation.end);
             }
         }
 
@@ -144,18 +125,12 @@ impl Line {
             }
 
             if fragment_end <= range.start {
-                result.truncate_left_until(
-                    fragment
-                        .start
-                        .saturating_add(fragment.grapheme.len()),
-                );
+                result.truncate_left_until(fragment.start.saturating_add(fragment.grapheme.len()));
                 break;
             } else if fragment_start < range.start && fragment_end > range.start {
                 result.replace(
                     0,
-                    fragment
-                        .start
-                        .saturating_add(fragment.grapheme.len()),
+                    fragment.start.saturating_add(fragment.grapheme.len()),
                     "⋯",
                 );
                 break;
@@ -209,9 +184,7 @@ impl Line {
         debug_assert!(at <= self.grapheme_count());
         if let Some(fragment) = self.fragments.get(at) {
             let start = fragment.start;
-            let end = fragment
-                .start
-                .saturating_add(fragment.grapheme.len());
+            let end = fragment.start.saturating_add(fragment.grapheme.len());
 
             self.string.drain(start..end);
             self.rebuild_fragments();
@@ -310,7 +283,11 @@ impl Line {
             .map(|(_, grapheme_index)| *grapheme_index)
     }
 
-    fn find_all(&self, query: &str, range: Range<ByteIndex>) -> Vec<(ByteIndex, GraphemeIndex)> {
+    pub fn find_all(
+        &self,
+        query: &str,
+        range: Range<ByteIndex>,
+    ) -> Vec<(ByteIndex, GraphemeIndex)> {
         let end = min(range.end, self.string.len());
         let start = range.start;
 
