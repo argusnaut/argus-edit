@@ -44,8 +44,11 @@ impl UIComponent for StatusBar {
         );
 
         let position_indicator = self.current_status.position_indicator_to_string();
+        let filetype = self.current_status.filetype_to_string();
+        let back_part = format!("{filetype} | {position_indicator}");
+
         let remainder_len = self.size.width.saturating_sub(beginning.len());
-        let status = format!("{beginning}{position_indicator:>remainder_len$}");
+        let status = format!("{beginning}{back_part:>remainder_len$}");
 
         let to_print = if status.len() <= self.size.width {
             status

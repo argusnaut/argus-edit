@@ -21,7 +21,7 @@ impl Buffer {
         self.dirty
     }
 
-    pub const fn get_file_info(&self) -> &FileInfo {
+    pub const fn get_fileinfo(&self) -> &FileInfo {
         &self.fileinfo
     }
 
@@ -42,7 +42,7 @@ impl Buffer {
         highlighter: &Highlighter,
     ) -> Option<AnnotatedString> {
         self.lines.get(line_index).map(|line| {
-            line.get_annotated_visible_substr(range, highlighter.get_annotations(line_index))
+            line.get_annotated_visible_substr(range, Some(&highlighter.get_annotations(line_index)))
         })
     }
 

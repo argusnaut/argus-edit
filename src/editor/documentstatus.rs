@@ -1,11 +1,14 @@
 use crate::prelude::*;
 
+use super::FileType;
+
 #[derive(Default, Eq, PartialEq, Debug)]
 pub struct DocumentStatus {
     pub total_lines: usize,
     pub current_line_index: LineIndex,
     pub is_modified: bool,
     pub filename: String,
+    pub filetype: FileType,
 }
 
 impl DocumentStatus {
@@ -27,5 +30,9 @@ impl DocumentStatus {
             self.current_line_index.saturating_add(1),
             self.total_lines
         )
+    }
+
+    pub fn filetype_to_string(&self) -> String {
+        self.filetype.to_string()
     }
 }

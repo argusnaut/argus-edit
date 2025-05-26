@@ -1,15 +1,29 @@
 use std::fmt::{self, Display};
 use std::path::{Path, PathBuf};
 
+use crate::editor::filetype::FileType;
+
 #[derive(Default, Debug)]
 pub struct FileInfo {
     path: Option<PathBuf>,
+    filetype: FileType,
 }
 
 impl FileInfo {
     pub fn from(filename: &str) -> Self {
+        let path = PathBuf::from(filename);
+        let filetype = if path
+            .extension()
+            .map_or(false, |ext| ext.eq_ignore_ascii_case("rs"))
+        {
+            FileType::Rust
+        } else {
+            FileType::Text
+        };
+
         Self {
-            path: Some(PathBuf::from(filename)),
+            path: Some(path),
+            filetype,
         }
     }
 
@@ -19,6 +33,10 @@ impl FileInfo {
 
     pub const fn has_path(&self) -> bool {
         self.path.is_some()
+    }
+
+    pub const fn get_filetype(&self) -> FileType {
+        self.filetype
     }
 }
 
