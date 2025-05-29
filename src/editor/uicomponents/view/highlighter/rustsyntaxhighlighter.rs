@@ -78,34 +78,94 @@ pub struct RustSyntaxHighlighter {
 impl SyntaxHighlighter for RustSyntaxHighlighter {
     fn highlight(&mut self, index: LineIndex, line: &Line) {
         let mut result = Vec::new();
+        let mut iterator = line.split_word_bound_indices().peekable();
 
-        for (start_index, word) in line.split_word_bound_indices() {
-            let mut annotation_type = None;
+        while let Some((start_index, _)) = iterator.next() {
+            let remainder = &line[start_index..];
 
-            if is_valid_number(word) {
-                annotation_type = Some(AnnotationType::Number);
-            } else if is_keyword(word) {
-                annotation_type = Some(AnnotationType::Keyword);
-            } else if is_type(word) {
-                annotation_type = Some(AnnotationType::Type);
-            } else if is_known_value(word) {
-                annotation_type = Some(AnnotationType::KnownValue);
-            }
+            if let Some(mut annotation) = annotate_char(remainder)
+                .or_else(|| annotate_number(remainder))
+                .or_else(|| annotate_keyword(remainder))
+                .or_else(|| annotate_type(remainder))
+                .or_else(|| annotate_known_value(remainder))
+            {
+                annotation.shift(start_index);
 
-            if let Some(annotation_type) = annotation_type {
-                result.push(Annotation {
-                    annotation_type,
-                    start: start_index,
-                    end: start_index.saturating_add(word.len()),
-                })
-            }
+                result.push(annotation);
+
+                while let Some(&(next_index, _)) = iterator.peek() {
+                    if next_index >= annotation.end {
+                        break;
+                    }
+                    iterator.next();
+                }
+            };
         }
+
         self.highlights.insert(index, result);
     }
 
     fn get_annotations(&self, index: LineIndex) -> Option<&Vec<Annotation>> {
         self.highlights.get(&index)
     }
+}
+
+fn annotate_next_word<F>(
+    string: &str,
+    annotation_type: AnnotationType,
+    validator: F,
+) -> Option<Annotation>
+where
+    F: Fn(&str) -> bool,
+{
+    if let Some(word) = string.split_word_bounds().next() {
+        if validator(word) {
+            return Some(Annotation {
+                annotation_type,
+                start: 0,
+                end: word.len(),
+            });
+        }
+    }
+    None
+}
+
+fn annotate_number(string: &str) -> Option<Annotation> {
+    annotate_next_word(string, AnnotationType::Number, is_valid_number)
+}
+
+fn annotate_type(string: &str) -> Option<Annotation> {
+    annotate_next_word(string, AnnotationType::Type, is_type)
+}
+
+fn annotate_keyword(string: &str) -> Option<Annotation> {
+    annotate_next_word(string, AnnotationType::Keyword, is_keyword)
+}
+
+fn annotate_known_value(string: &str) -> Option<Annotation> {
+    annotate_next_word(string, AnnotationType::KnownValue, is_known_value)
+}
+
+fn annotate_char(string: &str) -> Option<Annotation> {
+    let mut iter = string.split_word_bound_indices().peekable();
+
+    if let Some((_, "\'")) = iter.next() {
+        if let Some((_, "\\")) = iter.peek() {
+            iter.next();
+        }
+
+        iter.next();
+
+        if let Some((index, "\'")) = iter.next() {
+            return Some(Annotation {
+                annotation_type: AnnotationType::Char,
+                start: 0,
+                end: index.saturating_add(1),
+            });
+        }
+    }
+
+    None
 }
 
 fn is_valid_number(word: &str) -> bool {
