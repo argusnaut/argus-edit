@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
@@ -72,24 +70,127 @@ const KNOWN_VALUES: [&str; 6] = ["Some", "None", "true", "false", "Ok", "Err"];
 
 #[derive(Default)]
 pub struct RustSyntaxHighlighter {
-    highlights: HashMap<LineIndex, Vec<Annotation>>,
+    highlights: Vec<Vec<Annotation>>,
+    ml_comment_balance: usize,
+    in_ml_string: bool,
+}
+
+impl RustSyntaxHighlighter {
+    fn annotate_ml_comment(&mut self, string: &str) -> Option<Annotation> {
+        let mut chars = string.char_indices().peekable();
+
+        while let Some((_, char)) = chars.next() {
+            if char == '/' {
+                if let Some((_, '*')) = chars.peek() {
+                    self.ml_comment_balance = self.ml_comment_balance.saturating_add(1);
+                    chars.next();
+                }
+            } else if self.ml_comment_balance == 0 {
+                return None;
+            } else if char == '*' {
+                if let Some((index, '/')) = chars.peek() {
+                    self.ml_comment_balance = self.ml_comment_balance.saturating_sub(1);
+
+                    if self.ml_comment_balance == 0 {
+                        return Some(Annotation {
+                            annotation_type: AnnotationType::Comment,
+                            start: 0,
+                            end: index.saturating_add(1),
+                        });
+                    }
+
+                    chars.next();
+                }
+            }
+        }
+
+        (self.ml_comment_balance > 0).then_some(Annotation {
+            annotation_type: AnnotationType::Comment,
+            start: 0,
+            end: string.len(),
+        })
+    }
+
+    fn annotate_string(&mut self, string: &str) -> Option<Annotation> {
+        let mut chars = string.char_indices();
+
+        while let Some((index, char)) = chars.next() {
+            if char == '\\' && self.in_ml_string {
+                chars.next();
+                continue;
+            }
+
+            if char == '"' {
+                if self.in_ml_string {
+                    self.in_ml_string = false;
+                    return Some(Annotation {
+                        annotation_type: AnnotationType::String,
+                        start: 0,
+                        end: index.saturating_add(1),
+                    });
+                }
+
+                self.in_ml_string = true;
+            }
+
+            if !self.in_ml_string {
+                return None;
+            }
+        }
+
+        self.in_ml_string.then_some(Annotation {
+            annotation_type: AnnotationType::String,
+            start: 0,
+            end: string.len(),
+        })
+    }
+
+    fn initial_annotation(&mut self, line: &Line) -> Option<Annotation> {
+        if self.in_ml_string {
+            self.annotate_string(line)
+        } else if self.ml_comment_balance > 0 {
+            self.annotate_ml_comment(line)
+        } else {
+            None
+        }
+    }
+
+    fn annotate_remainder(&mut self, remainder: &str) -> Option<Annotation> {
+        self.annotate_ml_comment(remainder)
+            .or_else(|| self.annotate_string(remainder))
+            .or_else(|| annotate_single_line_comment(remainder))
+            .or_else(|| annotate_char(remainder))
+            .or_else(|| annotate_lifetime_specifier(remainder))
+            .or_else(|| annotate_number(remainder))
+            .or_else(|| annotate_keyword(remainder))
+            .or_else(|| annotate_type(remainder))
+            .or_else(|| annotate_known_value(remainder))
+    }
 }
 
 impl SyntaxHighlighter for RustSyntaxHighlighter {
     fn highlight(&mut self, index: LineIndex, line: &Line) {
+        debug_assert_eq!(index, self.highlights.len());
+
         let mut result = Vec::new();
         let mut iterator = line.split_word_bound_indices().peekable();
+
+        if let Some(annotation) = self.initial_annotation(line) {
+            result.push(annotation);
+
+            while let Some(&(next_index, _)) = iterator.peek() {
+                if next_index >= annotation.end {
+                    break;
+                }
+
+                iterator.next();
+            }
+        }
 
         while let Some((start_index, _)) = iterator.next() {
             let remainder = &line[start_index..];
 
-            if let Some(mut annotation) = annotate_char(remainder)
-                .or_else(|| annotate_lifetime_specifier(remainder))
-                .or_else(|| annotate_number(remainder))
-                .or_else(|| annotate_keyword(remainder))
-                .or_else(|| annotate_type(remainder))
-                .or_else(|| annotate_known_value(remainder))
-            {
+            if let Some(mut annotation) = self.annotate_remainder(remainder) {
                 annotation.shift(start_index);
 
                 result.push(annotation);
@@ -98,16 +199,17 @@ impl SyntaxHighlighter for RustSyntaxHighlighter {
                     if next_index >= annotation.end {
                         break;
                     }
+
                     iterator.next();
                 }
             };
         }
 
-        self.highlights.insert(index, result);
+        self.highlights.push(result);
     }
 
     fn get_annotations(&self, index: LineIndex) -> Option<&Vec<Annotation>> {
-        self.highlights.get(&index)
+        self.highlights.get(index)
     }
 }
 
@@ -180,6 +282,18 @@ fn annotate_lifetime_specifier(string: &str) -> Option<Annotation> {
                 end: index.saturating_add(next_word.len()),
             });
         }
+    }
+
+    None
+}
+
+fn annotate_single_line_comment(string: &str) -> Option<Annotation> {
+    if string.starts_with("//") {
+        return Some(Annotation {
+            annotation_type: AnnotationType::Comment,
+            start: 0,
+            end: string.len(),
+        });
     }
 
     None
