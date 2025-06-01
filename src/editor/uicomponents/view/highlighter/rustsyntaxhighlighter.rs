@@ -84,6 +84,7 @@ impl SyntaxHighlighter for RustSyntaxHighlighter {
             let remainder = &line[start_index..];
 
             if let Some(mut annotation) = annotate_char(remainder)
+                .or_else(|| annotate_lifetime_specifier(remainder))
                 .or_else(|| annotate_number(remainder))
                 .or_else(|| annotate_keyword(remainder))
                 .or_else(|| annotate_type(remainder))
@@ -161,6 +162,22 @@ fn annotate_char(string: &str) -> Option<Annotation> {
                 annotation_type: AnnotationType::Char,
                 start: 0,
                 end: index.saturating_add(1),
+            });
+        }
+    }
+
+    None
+}
+
+fn annotate_lifetime_specifier(string: &str) -> Option<Annotation> {
+    let mut iter = string.split_word_bound_indices();
+
+    if let Some((_, "\'")) = iter.next() {
+        if let Some((index, next_word)) = iter.next() {
+            return Some(Annotation {
+                annotation_type: AnnotationType::LifetimeSpecifier,
+                start: 0,
+                end: index.saturating_add(next_word.len()),
             });
         }
     }
